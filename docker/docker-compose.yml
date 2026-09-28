@@ -1,0 +1,35 @@
+# Single-node Cassandra for learning (not for real capacity numbers).
+# Start:  docker compose -f docker/docker-compose.yml up -d
+# Check:  docker exec -it cassandra nodetool status        (wait for "UN")
+# Stop:   docker compose -f docker/docker-compose.yml down -v
+services:
+  cassandra:
+    image: cassandra:5.0
+    container_name: cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: nb-lab
+      CASSANDRA_DC: datacenter1                 # -> localdc=datacenter1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      MAX_HEAP_SIZE: 1G                 # must stay well below memory limit (off-heap needs room)
+      HEAP_NEWSIZE: 200M
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe keyspaces' > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 2g
+
+volumes:
+  cassandra-data:
+
+networks:
+  default:
+    name: nb-net                              # nb5 container joins with --network nb-net

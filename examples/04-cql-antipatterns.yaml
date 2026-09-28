@@ -1,0 +1,64 @@
+# Guide: docs/07-examples.md (04)
+# Compare the two scenarios - same cluster, same rates, very different "results":
+#   nb5 examples/04-cql-antipatterns.yaml bad  host=127.0.0.1 localdc=datacenter1 --report-summary-to stdout:0
+#   nb5 examples/04-cql-antipatterns.yaml good host=127.0.0.1 localdc=datacenter1 --report-summary-to stdout:0
+# Then prove the misses - print a few generated read queries and paste them into cqlsh:
+#   nb5 run driver=stdout workload=examples/04-cql-antipatterns.yaml tags==block:main-bad cycles=5
+#   docker exec -it cassandra cqlsh -e "SELECT * FROM antipatterns.items WHERE pk='<key>' LIMIT 1;"
+description: Side-by-side bad vs good workload design (key-domain mismatch + hot partition).
+
+scenarios:
+  bad:
+    schema: run driver=cql tags==block:schema threads===1 cycles===UNDEF
+    rampup: run driver=cql tags==block:rampup-bad cycles=10000 threads=auto
+    main:   run driver=cql tags==block:main-bad cycles=200000 threads=auto
+  good:
+    schema: run driver=cql tags==block:schema threads===1 cycles===UNDEF
+    rampup: run driver=cql tags==block:rampup-good cycles=100000 threads=auto
+    main:   run driver=cql tags==block:main-good cycles=200000 threads=auto
+
+params:
+  instrument: true
+
+bindings:
+  # BAD: only 10 partitions -> hot partitions; reads target a 1B key space -> ~all misses
+  bad_pk:      Mod(10); ToString() -> String
+  bad_ck:      Identity(); ToString() -> String
+  bad_read_pk: Uniform(0,1000000000)->long; ToString() -> String
+  # GOOD: 100k partitions written once; reads use the SAME domain
+  good_pk:      Mod(100000); ToString() -> String
+  good_read_pk: Hash(); Mod(100000); ToString() -> String
+  ck:           Identity(); ToString() -> String
+  payload:      HashedFileExtractToString('data/lorem_ipsum_full.txt',900,1100)
+
+blocks:
+  schema:
+    params:
+      prepared: false
+    ops:
+      create-keyspace: |
+        CREATE KEYSPACE IF NOT EXISTS antipatterns
+        WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'};
+      create-table: |
+        CREATE TABLE IF NOT EXISTS antipatterns.items (
+          pk text, ck text, payload text,
+          PRIMARY KEY (pk, ck)
+        );
+
+  rampup-bad:
+    ops:
+      insert-bad: |
+        INSERT INTO antipatterns.items (pk, ck, payload) VALUES ({bad_pk}, {bad_ck}, {payload});
+  main-bad:
+    ops:
+      main-select-bad: |
+        SELECT * FROM antipatterns.items WHERE pk = {bad_read_pk} LIMIT 1;
+
+  rampup-good:
+    ops:
+      insert-good: |
+        INSERT INTO antipatterns.items (pk, ck, payload) VALUES ({good_pk}, {ck}, {payload});
+  main-good:
+    ops:
+      main-select-good: |
+        SELECT * FROM antipatterns.items WHERE pk = {good_read_pk} LIMIT 1;

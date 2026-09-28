@@ -1,0 +1,64 @@
+# Guide: docs/05, 06, 07
+# Full run:
+#   nb5 examples/02-cql-keyvalue.yaml default host=127.0.0.1 localdc=datacenter1
+# Single step:
+#   nb5 examples/02-cql-keyvalue.yaml default.main host=127.0.0.1 localdc=datacenter1 main-cycles=1M
+# Template knobs (override on CLI as name=value):
+#   keycount, rampup-cycles, main-cycles, read-ratio, write-ratio, keyspace, rf, read_cl, write_cl
+description: Key-value baseline for Cassandra - one text key, one text value.
+
+scenarios:
+  default:
+    schema: run driver=cql tags==block:schema threads===1 cycles===UNDEF
+    rampup: run driver=cql tags==block:rampup cycles===TEMPLATE(rampup-cycles,1000000) threads=auto
+    main:   run driver=cql tags==block:"main.*" cycles===TEMPLATE(main-cycles,1000000) threads=auto
+
+params:
+  instrument: true                  # per-op metrics (main-select, main-insert, ...)
+
+bindings:
+  # rampup: every key 0..keycount-1 written exactly once (cycle -> key)
+  seq_key:   Mod(TEMPLATE(keycount,1000000)); ToString() -> String
+  seq_value: Hash(); Mod(1000000000); ToString() -> String
+  # main: keys drawn from the SAME domain -> reads always hit existing rows
+  rw_key:    Hash(); Mod(TEMPLATE(keycount,1000000)); ToString() -> String
+  rw_value:  Hash(); Hash(); Mod(1000000000); ToString() -> String
+
+blocks:
+  schema:
+    params:
+      prepared: false
+    ops:
+      create-keyspace: |
+        CREATE KEYSPACE IF NOT EXISTS TEMPLATE(keyspace,baselines)
+        WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 'TEMPLATE(rf,1)'};
+      create-table: |
+        CREATE TABLE IF NOT EXISTS TEMPLATE(keyspace,baselines).keyvalue (
+          key   text PRIMARY KEY,
+          value text
+        );
+
+  rampup:
+    params:
+      cl: TEMPLATE(write_cl,LOCAL_QUORUM)
+    ops:
+      rampup-insert: |
+        INSERT INTO TEMPLATE(keyspace,baselines).keyvalue (key, value)
+        VALUES ({seq_key}, {seq_value});
+
+  main-read:
+    params:
+      ratio: TEMPLATE(read-ratio,5)
+      cl: TEMPLATE(read_cl,LOCAL_QUORUM)
+    ops:
+      main-select: |
+        SELECT * FROM TEMPLATE(keyspace,baselines).keyvalue WHERE key = {rw_key};
+
+  main-write:
+    params:
+      ratio: TEMPLATE(write-ratio,5)
+      cl: TEMPLATE(write_cl,LOCAL_QUORUM)
+    ops:
+      main-insert: |
+        INSERT INTO TEMPLATE(keyspace,baselines).keyvalue (key, value)
+        VALUES ({rw_key}, {rw_value});

@@ -1,0 +1,76 @@
+# Guide: docs/04-bindings.md, docs/07-examples.md
+# Run:
+#   nb5 examples/03-cql-timeseries.yaml default host=127.0.0.1 localdc=datacenter1
+# Preview generated rows without a DB:
+#   nb5 run driver=stdout workload=examples/03-cql-timeseries.yaml tags==block:rampup cycles=5
+description: IoT time-series - partitions bucketed by (machine, day) to keep them bounded.
+
+scenarios:
+  default:
+    schema: run driver=cql tags==block:schema threads===1 cycles===UNDEF
+    rampup: run driver=cql tags==block:rampup cycles===TEMPLATE(rampup-cycles,1000000) threads=auto
+    # main continues the timeline AFTER rampup (1M..2M) -> new rows, not overwrites of rampup rows
+    main:   run driver=cql tags==block:"main.*" cycles===TEMPLATE(main-cycles,1000000..2000000) threads=auto
+
+params:
+  instrument: true
+
+bindings:
+  # cycle c -> machine (c mod sources); each machine gets a row every `sources` cycles
+  machine_id:  Mod(TEMPLATE(sources,10000)); ToHashedUUID() -> java.util.UUID
+  sensor_name: HashedLineToString('data/variable_words.txt')
+  # time advances timespeed ms per cycle / sources => per-machine interval = timespeed ms
+  reading_ts:  Mul(TEMPLATE(timespeed,1000)L); Div(TEMPLATE(sources,10000)L); ToJavaInstant()
+  day_bucket:  Mul(TEMPLATE(timespeed,1000)L); Div(TEMPLATE(sources,10000)L); Div(86400000L) -> long
+  value:       Normal(100.0,5.0) -> double
+  # reads: any existing machine. With defaults, 2M cycles = 200 s of simulated time -> all rows in day_bucket 0
+  # (in a real multi-day run, bind the bucket to "today" instead of the literal 0 below)
+  rw_machine:  HashRange(0,TEMPLATE(sources,10000)); Mod(TEMPLATE(sources,10000)); ToHashedUUID() -> java.util.UUID
+
+blocks:
+  schema:
+    params:
+      prepared: false
+    ops:
+      create-keyspace: |
+        CREATE KEYSPACE IF NOT EXISTS TEMPLATE(keyspace,iot)
+        WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 'TEMPLATE(rf,1)'};
+      create-table: |
+        CREATE TABLE IF NOT EXISTS TEMPLATE(keyspace,iot).sensor_data (
+          machine_id  uuid,
+          day_bucket  bigint,
+          reading_ts  timestamp,
+          sensor_name text,
+          value       double,
+          PRIMARY KEY ((machine_id, day_bucket), reading_ts, sensor_name)
+        ) WITH CLUSTERING ORDER BY (reading_ts DESC, sensor_name ASC)
+          AND compaction = {'class': 'TimeWindowCompactionStrategy',
+                            'compaction_window_unit': 'DAYS', 'compaction_window_size': 1};
+
+  rampup:
+    params:
+      cl: LOCAL_QUORUM
+    ops:
+      insert-reading: |
+        INSERT INTO TEMPLATE(keyspace,iot).sensor_data
+          (machine_id, day_bucket, reading_ts, sensor_name, value)
+        VALUES ({machine_id}, {day_bucket}, {reading_ts}, {sensor_name}, {value});
+
+  main-read:
+    params:
+      ratio: 1
+      cl: LOCAL_QUORUM
+    ops:
+      latest-readings: |
+        SELECT * FROM TEMPLATE(keyspace,iot).sensor_data
+        WHERE machine_id = {rw_machine} AND day_bucket = 0 LIMIT 10;
+
+  main-write:
+    params:
+      ratio: 9
+      cl: LOCAL_QUORUM
+    ops:
+      insert-reading: |
+        INSERT INTO TEMPLATE(keyspace,iot).sensor_data
+          (machine_id, day_bucket, reading_ts, sensor_name, value)
+        VALUES ({machine_id}, {day_bucket}, {reading_ts}, {sensor_name}, {value});

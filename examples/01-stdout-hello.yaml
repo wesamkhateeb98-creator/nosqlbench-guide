@@ -1,0 +1,16 @@
+# Guide: docs/03-yaml-structure.md, docs/07-examples.md
+# Run:    nb5 examples/01-stdout-hello.yaml
+description: Hello NoSQLBench - prints generated ops, no database needed.
+
+scenarios:
+  default:
+    main: run driver=stdout cycles=5 threads=1
+
+bindings:
+  id:   Identity()                              # 0,1,2,...
+  user: Mod(1000); ToString() -> String         # "0".."999"
+  age:  HashRange(18,80)                        # pseudo-random, repeatable
+  city: WeightedStrings('Cairo:5;Riyadh:3;Paris:2')
+
+ops:
+  hello: "cycle={id} user={user} age={age} city={city}\n"
